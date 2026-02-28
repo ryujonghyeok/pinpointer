@@ -96,18 +96,97 @@
       const [distance, setDistance] = useState(0);
       const [bearing, setBearing] = useState(0);
 
-      // Native Browser Back Button Support
+      const handleOrientation = useCallback((event) => {
+        let compassHeading = null;
+        if (event.webkitCompassHeading) {
+          compassHeading = event.webkitCompassHeading;
+        } else if (event.alpha !== null) {
+          compassHeading = 360 - event.alpha;
+        }
+        
+        if (compassHeading !== null) {
+          setHeading(compassHeading);
+        }
+      }, []);
+
+      const startSensors = useCallback(async (currentTarget) => {
+        setGeoError(null);
+
+        if ('geolocation' in navigator) {
+          navigator.geolocation.watchPosition(
+            (position) => {
+              setCurrentLoc({
+                lat: position.coords.latitude,
+                lon: position.coords.longitude,
+                accuracy: position.coords.accuracy
+              });
+            },
+            (error) => {
+              console.error("Geolocation error:", error.message || error);
+              setGeoError("GPS blocked/unavailable. Using simulated location.");
+              if (currentTarget) {
+                setCurrentLoc({
+                  lat: currentTarget.lat - 0.0003,
+                  lon: currentTarget.lon - 0.0003,
+                  accuracy: 5
+                });
+              }
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+          );
+        } else {
+          setGeoError("Geolocation is not supported by your browser.");
+        }
+
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+          try {
+            const permission = await DeviceOrientationEvent.requestPermission();
+            if (permission === 'granted') {
+              window.addEventListener('deviceorientation', handleOrientation, true);
+            } else {
+              setGeoError("Compass permission denied. Tap here to try again.");
+            }
+          } catch (err) {
+            console.error("Orientation permission error:", err.message || err);
+          }
+        } else {
+          window.addEventListener('deviceorientationabsolute', handleOrientation, true);
+        }
+      }, [handleOrientation]);
+
+      // URL Parameter & History Management
       useEffect(() => {
-        const handlePopState = () => {
-          if (window.location.hash !== '#tracking') {
+        const syncStateWithURL = () => {
+          const params = new URLSearchParams(window.location.search);
+          const lat = params.get('lat');
+          const lon = params.get('lon');
+          const name = params.get('name');
+
+          // If URL has coordinates, immediately enter Tracking state
+          if (lat && lon) {
+            const restoredTarget = {
+              lat: parseFloat(lat),
+              lon: parseFloat(lon),
+              name: name || 'Pinned Location'
+            };
+            setTarget(restoredTarget);
+            setAppState('TRACKING');
+            startSensors(restoredTarget);
+          } else {
+            // Otherwise, stay in Search state
             setAppState('SEARCH');
             setTarget(null);
             setCurrentLoc(null);
           }
         };
-        window.addEventListener('popstate', handlePopState);
-        return () => window.removeEventListener('popstate', handlePopState);
-      }, []);
+
+        // Run on initial load
+        syncStateWithURL();
+
+        // Listen for browser back/forward buttons
+        window.addEventListener('popstate', syncStateWithURL);
+        return () => window.removeEventListener('popstate', syncStateWithURL);
+      }, [startSensors]);
 
       const handleSearch = async (e) => {
         e.preventDefault();
@@ -174,78 +253,25 @@
           lon: parseFloat(item.lon),
           name: item.display_name.split(',')[0]
         };
+        
+        // Update URL Parameters so it can be bookmarked/reloaded
+        const params = new URLSearchParams(window.location.search);
+        params.set('lat', newTarget.lat);
+        params.set('lon', newTarget.lon);
+        params.set('name', newTarget.name);
+        window.history.pushState(null, '', `?${params.toString()}`);
+        
         setTarget(newTarget);
         setAppState('TRACKING');
-        window.history.pushState(null, '', '#tracking');
         startSensors(newTarget);
       };
 
-      const handleOrientation = useCallback((event) => {
-        let compassHeading = null;
-        if (event.webkitCompassHeading) {
-          compassHeading = event.webkitCompassHeading;
-        } else if (event.alpha !== null) {
-          compassHeading = 360 - event.alpha;
-        }
-        
-        if (compassHeading !== null) {
-          setHeading(compassHeading);
-        }
-      }, []);
-
-      const startSensors = async (currentTarget) => {
-        setGeoError(null);
-
-        if ('geolocation' in navigator) {
-          navigator.geolocation.watchPosition(
-            (position) => {
-              setCurrentLoc({
-                lat: position.coords.latitude,
-                lon: position.coords.longitude,
-                accuracy: position.coords.accuracy
-              });
-            },
-            (error) => {
-              console.error("Geolocation error:", error.message || error);
-              setGeoError("GPS blocked/unavailable. Using simulated location.");
-              if (currentTarget) {
-                setCurrentLoc({
-                  lat: currentTarget.lat - 0.0003,
-                  lon: currentTarget.lon - 0.0003,
-                  accuracy: 5
-                });
-              }
-            },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
-          );
-        } else {
-          setGeoError("Geolocation is not supported by your browser.");
-        }
-
-        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-          try {
-            const permission = await DeviceOrientationEvent.requestPermission();
-            if (permission === 'granted') {
-              window.addEventListener('deviceorientation', handleOrientation, true);
-            } else {
-              setGeoError("Compass permission denied. Tap here to try again.");
-            }
-          } catch (err) {
-            console.error("Orientation permission error:", err.message || err);
-          }
-        } else {
-          window.addEventListener('deviceorientationabsolute', handleOrientation, true);
-        }
-      };
-
       const stopTracking = () => {
-        if (window.location.hash === '#tracking') {
-          window.history.back(); // Use native back function
-        } else {
-          setAppState('SEARCH');
-          setTarget(null);
-          setCurrentLoc(null);
-        }
+        // Clear URL parameters securely and return to base URL
+        window.history.pushState(null, '', window.location.pathname);
+        setAppState('SEARCH');
+        setTarget(null);
+        setCurrentLoc(null);
       };
 
       useEffect(() => {
@@ -444,7 +470,7 @@
             )}
           </div>
 
-          {/* Bottom Area (Distance) */}
+          {/* Bottom Area (Distance) - pb-10 added for extra safety margin above browser bottom bars */}
           <div className="pb-10 px-8 relative z-10 flex-shrink-0">
             {currentLoc && (
               <div className="mb-4">
