@@ -16,15 +16,29 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <style>
-    /* Prevent pull-to-refresh and bounce scrolling on mobile for a native app feel */
-    body {
+    /* iOS Browser Cut-off Fix: 
+      Use Dynamic Viewport Height (dvh) to strictly fit between the browser's top and bottom toolbars.
+      Locking overflow prevents the whole page from bouncing/scrolling.
+    */
+    html, body, #root {
+      height: 100vh; /* Fallback for older browsers */
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #000;
       overscroll-behavior-y: none;
       -webkit-user-select: none;
       user-select: none;
     }
+
+    @supports (height: 100dvh) {
+      html, body, #root {
+        height: 100dvh;
+      }
+    }
   </style>
 </head>
-<body class="bg-black">
+<body class="bg-black text-white">
   <div id="root"></div>
 
   <script type="text/babel">
@@ -254,10 +268,12 @@
         return { prefix: '', suffix: 'around' };
       };
 
+      // --- RENDER SEARCH STATE ---
+      // Replaced h-screen with h-full (which perfectly fills the 100dvh root body)
       if (appState === 'SEARCH') {
         return (
-          <div className="flex flex-col h-screen max-w-md mx-auto bg-gray-50 text-gray-900 font-sans shadow-xl overflow-hidden relative">
-            <div className="p-6 bg-white border-b border-gray-200 shadow-sm z-10">
+          <div className="flex flex-col h-full w-full max-w-md mx-auto bg-gray-50 text-gray-900 font-sans shadow-xl relative">
+            <div className="p-6 bg-white border-b border-gray-200 shadow-sm z-10 flex-shrink-0">
               <h1 className="text-2xl font-bold mb-2">Find Location</h1>
               <p className="text-sm text-gray-500 mb-6">Search for a destination to begin precision tracking.</p>
               
@@ -284,7 +300,7 @@
               </form>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-safe">
               {searchResults.map((item, idx) => {
                 const isDistant = item.distFromUser !== undefined;
                 const formattedDist = isDistant ? formatDistance(item.distFromUser) : null;
@@ -320,7 +336,7 @@
         );
       }
 
-      // --- TRACKING STATE ---
+      // --- RENDER TRACKING STATE ---
       const { value: distValue, unit: distUnit } = formatDistance(distance);
       const arrowRotation = bearing - heading;
       const directionText = getDirectionText(arrowRotation);
@@ -328,15 +344,15 @@
       const isClose = currentLoc && distance < 100;
       const bgClass = isClose ? 'bg-[#1cd05a]' : 'bg-zinc-900';
 
-      // Math to normalize rotation to strictly -180 to 180 for the Arc drawing
       let normRot = ((arrowRotation % 360) + 360) % 360;
       if (normRot > 180) normRot -= 360;
 
+      // Replaced h-screen with h-full 
       return (
-        <div className={`flex flex-col h-screen w-full max-w-md mx-auto ${bgClass} text-white font-sans overflow-hidden relative selection:bg-transparent touch-none transition-colors duration-1000 ease-in-out`}>
+        <div className={`flex flex-col h-full w-full max-w-md mx-auto ${bgClass} text-white font-sans relative selection:bg-transparent touch-none transition-colors duration-1000 ease-in-out`}>
           
           {/* Top Header with Cancel 'X' Button */}
-          <div className="pt-14 px-6 relative z-10 flex justify-between items-start">
+          <div className="pt-10 px-6 relative z-10 flex justify-between items-start flex-shrink-0">
             <div>
               <p className="text-white/60 text-[10px] font-bold tracking-widest uppercase mb-0.5">Finding</p>
               <h1 className="text-3xl font-bold tracking-tight line-clamp-1">{target?.name}</h1>
@@ -352,7 +368,7 @@
           </div>
 
           {/* Main Center Area */}
-          <div className="flex-1 flex items-center justify-center relative z-10">
+          <div className="flex-1 flex items-center justify-center relative z-10 min-h-0">
             {!currentLoc ? (
               <div className="flex flex-col items-center animate-pulse">
                 <CompassIcon size={64} className="text-white/50 mb-4 animate-spin" style={{ animationDuration: '3s' }} />
@@ -364,12 +380,12 @@
                 )}
               </div>
             ) : (
-              <div className="relative flex items-center justify-center w-full h-full">
+              <div className="relative flex items-center justify-center w-full h-full p-4">
                 
-                {/* Expanded Master SVG containing Arrow, Dots, and Arc */}
-                <svg viewBox="0 0 400 400" className="w-full max-w-[360px] absolute inset-0 m-auto">
+                {/* Master SVG containing Arrow, Dots, and Arc */}
+                <svg viewBox="0 0 400 400" className="w-full max-w-[360px] max-h-full absolute inset-0 m-auto">
                   
-                  {/* Faint circles - radius expanded to 180 */}
+                  {/* Faint circles */}
                   <circle cx="200" cy="200" r="180" stroke="rgba(255,255,255,0.08)" strokeWidth="2" fill="none" />
                   <circle cx="200" cy="200" r="3" fill="rgba(255,255,255,0.3)" />
 
@@ -379,36 +395,26 @@
                     const cx = 200;
                     const cy = 200;
                     
-                    // The Gray Dot (straight ahead: 0 degrees, which is visually UP / -90 mathematically)
                     const startX = cx; 
                     const startY = cy - radius;
                     
-                    // The White Dot (where the arrow is pointing)
                     const endRad = (normRot - 90) * Math.PI / 180;
                     const endX = cx + radius * Math.cos(endRad);
                     const endY = cy + radius * Math.sin(endRad);
                     
-                    // Draw shortest path curve
                     const sweepFlag = normRot > 0 ? 1 : 0;
                     const arcPath = `M ${startX} ${startY} A ${radius} ${radius} 0 0 ${sweepFlag} ${endX} ${endY}`;
                     
                     return (
                       <g>
-                        {/* Unified Transparency for both Arc Path and Starting Dot */}
                         <path d={arcPath} stroke="rgba(255,255,255,0.25)" strokeWidth="6" fill="none" strokeLinecap="round" />
                         <circle cx={startX} cy={startY} r="5" fill="rgba(255,255,255,0.25)" />
-                        
                         <circle cx={endX} cy={endY} r="7" fill="white" />
                       </g>
                     );
                   })()}
 
-                  {/* Safari Bug Fix & Arrow scale increased by ~30%: 
-                      Path is anchored at exactly 200x200 center point.
-                      Tip ends higher (y=70).
-                      Wings and Tail proportionally expanded. 
-                      Stroke width increased to 30.
-                  */}
+                  {/* Dynamic Rotated Arrow */}
                   <g 
                     style={{ 
                       transform: `rotate(${arrowRotation}deg)`, 
@@ -431,12 +437,12 @@
             )}
           </div>
 
-          {/* Bottom Area (Distance) */}
-          <div className="pb-12 px-8 relative z-10">
+          {/* Bottom Area (Distance) - pb-10 added for extra safety margin above browser bottom bars */}
+          <div className="pb-10 px-8 relative z-10 flex-shrink-0">
             {currentLoc && (
-              <div className="mb-8">
+              <div className="mb-4">
                 <div className="flex items-baseline gap-2">
-                  <span className="text-7xl font-semibold tracking-tighter text-white">{distValue}</span>
+                  <span className="text-[5rem] leading-none font-semibold tracking-tighter text-white">{distValue}</span>
                   <span className="text-4xl font-medium text-white/50">{distUnit}</span>
                 </div>
                 <p className="text-[32px] font-medium tracking-tight mt-1">
