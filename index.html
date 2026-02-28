@@ -24,13 +24,13 @@
     }
   </style>
 </head>
-<body class="bg-gray-900">
+<body class="bg-black">
   <div id="root"></div>
 
   <script type="text/babel">
     const { useState, useEffect, useCallback } = React;
 
-    // --- Inline Icons (Replacing lucide-react to avoid import errors) ---
+    // --- Inline Icons ---
     const Icon = ({ children, className = "", size = 24 }) => (
       <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
         {children}
@@ -41,7 +41,6 @@
     const MapPinIcon = (props) => <Icon {...props}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></Icon>;
     const CompassIcon = (props) => <Icon {...props}><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></Icon>;
     const XIcon = (props) => <Icon {...props}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></Icon>;
-    const Volume2Icon = (props) => <Icon {...props}><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></Icon>;
 
     // --- Math & Geo Utilities ---
     const toRad = (value) => (value * Math.PI) / 180;
@@ -55,7 +54,7 @@
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
       const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
+      return R * c; // Distance in meters
     };
 
     const calculateBearing = (lat1, lon1, lat2, lon2) => {
@@ -83,20 +82,66 @@
       const [distance, setDistance] = useState(0);
       const [bearing, setBearing] = useState(0);
 
+      // Native Browser Back Button Support
+      useEffect(() => {
+        const handlePopState = () => {
+          if (window.location.hash !== '#tracking') {
+            setAppState('SEARCH');
+            setTarget(null);
+            setCurrentLoc(null);
+          }
+        };
+        window.addEventListener('popstate', handlePopState);
+        return () => window.removeEventListener('popstate', handlePopState);
+      }, []);
+
       const handleSearch = async (e) => {
         e.preventDefault();
         if (!searchQuery.trim()) return;
+
+        // Auto-detect Coordinates (e.g., 37.51551, 126.88110)
+        const coordMatch = searchQuery.trim().match(/^(-?\d+(\.\d+)?)[,\s]+(-?\d+(\.\d+)?)$/);
+        if (coordMatch) {
+          const lat = parseFloat(coordMatch[1]);
+          const lon = parseFloat(coordMatch[3]);
+          selectTarget({ lat, lon, display_name: "Pinned Coordinates" });
+          return;
+        }
         
         setIsSearching(true);
-        try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=5`);
-          const data = await res.json();
-          setSearchResults(data);
-        } catch (err) {
-          console.error("Search failed:", err.message || err);
-          alert("Failed to search location. Please check your connection.");
-        } finally {
-          setIsSearching(false);
+
+        const performSearch = async (userLat, userLon) => {
+          try {
+            // Fetch more results to allow accurate local sorting
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=15`);
+            const data = await res.json();
+
+            // Order by distance if we successfully got user's location
+            if (userLat !== null && userLon !== null) {
+              data.forEach(item => {
+                item.distFromUser = calculateDistance(userLat, userLon, parseFloat(item.lat), parseFloat(item.lon));
+              });
+              data.sort((a, b) => a.distFromUser - b.distFromUser);
+            }
+
+            setSearchResults(data);
+          } catch (err) {
+            console.error("Search failed:", err.message || err);
+            alert("Failed to search location. Please check your connection.");
+          } finally {
+            setIsSearching(false);
+          }
+        };
+
+        // Try to briefly grab the current location so we can sort results by distance
+        if ('geolocation' in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => performSearch(pos.coords.latitude, pos.coords.longitude),
+            (err) => performSearch(null, null), // Fallback to unsorted if denied/fails
+            { timeout: 2500, maximumAge: 60000, enableHighAccuracy: false }
+          );
+        } else {
+          performSearch(null, null);
         }
       };
 
@@ -108,6 +153,7 @@
         };
         setTarget(newTarget);
         setAppState('TRACKING');
+        window.history.pushState(null, '', '#tracking');
         startSensors(newTarget);
       };
 
@@ -170,9 +216,13 @@
       };
 
       const stopTracking = () => {
-        setAppState('SEARCH');
-        setTarget(null);
-        setCurrentLoc(null);
+        if (window.location.hash === '#tracking') {
+          window.history.back(); // Use native back function
+        } else {
+          setAppState('SEARCH');
+          setTarget(null);
+          setCurrentLoc(null);
+        }
       };
 
       useEffect(() => {
@@ -184,13 +234,12 @@
         }
       }, [currentLoc, target]);
 
+      // Metric System (m / km)
       const formatDistance = (meters) => {
-        const feet = meters * 3.28084;
-        if (feet < 1000) {
-          return { value: Math.round(feet), unit: 'ft' };
+        if (meters >= 1000) {
+          return { value: (meters / 1000).toFixed(1), unit: 'km' };
         } else {
-          const miles = feet / 5280;
-          return { value: miles.toFixed(1), unit: 'mi' };
+          return { value: meters.toFixed(1), unit: 'm' };
         }
       };
 
@@ -198,11 +247,11 @@
         let normalized = ((rotation % 360) + 360) % 360;
         if (normalized > 180) normalized -= 360;
 
-        if (Math.abs(normalized) <= 45) return 'ahead';
-        if (Math.abs(normalized) >= 135) return 'behind';
-        if (normalized > 45 && normalized < 135) return 'to your right';
-        if (normalized < -45 && normalized > -135) return 'to your left';
-        return 'around';
+        if (Math.abs(normalized) <= 15) return { prefix: '', suffix: 'ahead' };
+        if (Math.abs(normalized) >= 165) return { prefix: '', suffix: 'behind' };
+        if (normalized > 15 && normalized < 165) return { prefix: 'to your', suffix: 'right' };
+        if (normalized < -15 && normalized > -165) return { prefix: 'to your', suffix: 'left' };
+        return { prefix: '', suffix: 'around' };
       };
 
       if (appState === 'SEARCH') {
@@ -221,7 +270,7 @@
                     type="text" 
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Enter address..." 
+                    placeholder="Enter coordinates or address..." 
                     className="w-full pl-10 pr-4 py-3 bg-gray-100 rounded-xl outline-none focus:ring-2 focus:ring-[#1cd05a] transition-all"
                   />
                 </div>
@@ -236,21 +285,29 @@
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {searchResults.map((item, idx) => (
-                <div 
-                  key={idx} 
-                  onClick={() => selectTarget(item)}
-                  className="flex items-start p-4 bg-white rounded-xl shadow-sm cursor-pointer hover:shadow-md transition-all active:scale-[0.98]"
-                >
-                  <div className="bg-green-100 p-2 rounded-full mr-4 text-[#1cd05a] flex-shrink-0">
-                    <MapPinIcon size={20} />
+              {searchResults.map((item, idx) => {
+                const isDistant = item.distFromUser !== undefined;
+                const formattedDist = isDistant ? formatDistance(item.distFromUser) : null;
+                
+                return (
+                  <div 
+                    key={idx} 
+                    onClick={() => selectTarget(item)}
+                    className="flex items-start p-4 bg-white rounded-xl shadow-sm cursor-pointer hover:shadow-md transition-all active:scale-[0.98]"
+                  >
+                    <div className="bg-green-100 p-2 rounded-full mr-4 text-[#1cd05a] flex-shrink-0">
+                      <MapPinIcon size={20} />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-gray-900 line-clamp-1">{item.display_name.split(',')[0]}</h3>
+                      <p className="text-xs text-gray-500 line-clamp-2 mt-1">
+                        {isDistant && <span className="font-medium text-[#1cd05a] mr-2">{formattedDist.value} {formattedDist.unit} away</span>}
+                        {item.display_name}
+                      </p>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-900 line-clamp-1">{item.display_name.split(',')[0]}</h3>
-                    <p className="text-xs text-gray-500 line-clamp-2 mt-1">{item.display_name}</p>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               
               {!isSearching && searchResults.length === 0 && (
                 <div className="flex flex-col items-center justify-center h-full text-gray-400 opacity-60 mt-12">
@@ -263,24 +320,38 @@
         );
       }
 
+      // --- TRACKING STATE ---
       const { value: distValue, unit: distUnit } = formatDistance(distance);
       const arrowRotation = bearing - heading;
       const directionText = getDirectionText(arrowRotation);
+      
+      const isClose = currentLoc && distance < 100;
+      const bgClass = isClose ? 'bg-[#1cd05a]' : 'bg-zinc-900';
+
+      // Math to normalize rotation to strictly -180 to 180 for the Arc drawing
+      let normRot = ((arrowRotation % 360) + 360) % 360;
+      if (normRot > 180) normRot -= 360;
 
       return (
-        <div className="flex flex-col h-screen w-full max-w-md mx-auto bg-[#1cd05a] text-white font-sans overflow-hidden relative selection:bg-transparent touch-none">
+        <div className={`flex flex-col h-screen w-full max-w-md mx-auto ${bgClass} text-white font-sans overflow-hidden relative selection:bg-transparent touch-none transition-colors duration-1000 ease-in-out`}>
           
-          {/* Background pulsing circle effect */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-72 h-72 bg-white/10 rounded-full blur-2xl animate-pulse pointer-events-none"></div>
-          <div className="absolute top-1/4 right-1/4 w-24 h-24 bg-white/20 rounded-full blur-xl animate-pulse pointer-events-none" style={{animationDelay: '1s'}}></div>
-
-          {/* Top Header */}
-          <div className="pt-16 px-8 relative z-10">
-            <p className="text-white/80 text-xs font-bold tracking-widest uppercase mb-1">Finding</p>
-            <h1 className="text-4xl font-bold tracking-tight shadow-sm line-clamp-1">{target?.name}</h1>
+          {/* Top Header with Cancel 'X' Button */}
+          <div className="pt-14 px-6 relative z-10 flex justify-between items-start">
+            <div>
+              <p className="text-white/60 text-[10px] font-bold tracking-widest uppercase mb-0.5">Finding</p>
+              <h1 className="text-3xl font-bold tracking-tight line-clamp-1">{target?.name}</h1>
+            </div>
+            
+            <button 
+              onClick={stopTracking}
+              className="w-12 h-12 bg-white/10 rounded-full flex items-center justify-center hover:bg-white/20 transition-colors active:scale-90 flex-shrink-0"
+              aria-label="Cancel tracking"
+            >
+              <XIcon size={24} className="text-white" />
+            </button>
           </div>
 
-          {/* Main Center Area (Arrow) */}
+          {/* Main Center Area */}
           <div className="flex-1 flex items-center justify-center relative z-10">
             {!currentLoc ? (
               <div className="flex flex-col items-center animate-pulse">
@@ -293,63 +364,87 @@
                 )}
               </div>
             ) : (
-              <div className="relative flex items-center justify-center">
-                <div 
-                  className="absolute w-12 h-12 bg-white/20 rounded-full flex items-center justify-center transition-all duration-700 ease-out"
-                  style={{ transform: `translate(0px, -120px)` }}
-                >
-                   <div className="w-4 h-4 bg-white rounded-full shadow-lg"></div>
-                </div>
+              <div className="relative flex items-center justify-center w-full h-full">
+                
+                {/* Expanded Master SVG containing Arrow, Dots, and Arc */}
+                <svg viewBox="0 0 400 400" className="w-full max-w-[360px] absolute inset-0 m-auto">
+                  
+                  {/* Faint circles - radius expanded to 180 */}
+                  <circle cx="200" cy="200" r="180" stroke="rgba(255,255,255,0.08)" strokeWidth="2" fill="none" />
+                  <circle cx="200" cy="200" r="3" fill="rgba(255,255,255,0.3)" />
 
-                <svg 
-                  viewBox="0 0 24 24" 
-                  fill="none" 
-                  stroke="white" 
-                  strokeWidth="3.5" 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round" 
-                  className="w-56 h-56 drop-shadow-2xl will-change-transform"
-                  style={{ 
-                    transform: `rotate(${arrowRotation}deg)`, 
-                    transition: 'transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1)' 
-                  }}
-                >
-                  <path d="M12 21V4" />
-                  <path d="M5 11l7-7 7 7" />
+                  {/* Dynamic Arc and Dots */}
+                  {Math.abs(normRot) >= 15 && (() => {
+                    const radius = 180;
+                    const cx = 200;
+                    const cy = 200;
+                    
+                    // The Gray Dot (straight ahead: 0 degrees, which is visually UP / -90 mathematically)
+                    const startX = cx; 
+                    const startY = cy - radius;
+                    
+                    // The White Dot (where the arrow is pointing)
+                    const endRad = (normRot - 90) * Math.PI / 180;
+                    const endX = cx + radius * Math.cos(endRad);
+                    const endY = cy + radius * Math.sin(endRad);
+                    
+                    // Draw shortest path curve
+                    const sweepFlag = normRot > 0 ? 1 : 0;
+                    const arcPath = `M ${startX} ${startY} A ${radius} ${radius} 0 0 ${sweepFlag} ${endX} ${endY}`;
+                    
+                    return (
+                      <g>
+                        {/* Unified Transparency for both Arc Path and Starting Dot */}
+                        <path d={arcPath} stroke="rgba(255,255,255,0.25)" strokeWidth="6" fill="none" strokeLinecap="round" />
+                        <circle cx={startX} cy={startY} r="5" fill="rgba(255,255,255,0.25)" />
+                        
+                        <circle cx={endX} cy={endY} r="7" fill="white" />
+                      </g>
+                    );
+                  })()}
+
+                  {/* Safari Bug Fix & Arrow scale increased by ~30%: 
+                      Path is anchored at exactly 200x200 center point.
+                      Tip ends higher (y=70).
+                      Wings and Tail proportionally expanded. 
+                      Stroke width increased to 30.
+                  */}
+                  <g 
+                    style={{ 
+                      transform: `rotate(${arrowRotation}deg)`, 
+                      transformOrigin: '200px 200px',
+                      transition: 'transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1)' 
+                    }}
+                  >
+                    <path 
+                      d="M 200,185 L 200,70 M 148,122 L 200,70 L 252,122" 
+                      stroke="white" 
+                      strokeWidth="30" 
+                      strokeLinecap="round" 
+                      strokeLinejoin="round" 
+                      fill="none"
+                    />
+                  </g>
                 </svg>
+
               </div>
             )}
           </div>
 
-          {/* Bottom Area (Distance & Controls) */}
+          {/* Bottom Area (Distance) */}
           <div className="pb-12 px-8 relative z-10">
             {currentLoc && (
               <div className="mb-8">
-                <div className="flex items-baseline gap-1 drop-shadow-md">
-                  <span className="text-7xl font-semibold tracking-tighter">{distValue}</span>
-                  <span className="text-3xl font-medium text-white/80">{distUnit}</span>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-7xl font-semibold tracking-tighter text-white">{distValue}</span>
+                  <span className="text-4xl font-medium text-white/50">{distUnit}</span>
                 </div>
-                <p className="text-4xl font-medium tracking-tight drop-shadow-md capitalize">
-                  {directionText}
+                <p className="text-[32px] font-medium tracking-tight mt-1">
+                  {directionText.prefix && <span className="text-white/50">{directionText.prefix} </span>}
+                  <span className="text-white">{directionText.suffix}</span>
                 </p>
               </div>
             )}
-
-            <div className="flex justify-between items-center mt-6">
-              <button 
-                onClick={stopTracking}
-                className="w-14 h-14 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center hover:bg-white/30 transition-colors active:scale-90"
-              >
-                <XIcon size={28} />
-              </button>
-              
-              <button 
-                className="w-14 h-14 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center hover:bg-white/30 transition-colors active:scale-90"
-                onClick={() => alert('Playing sound on target... (Simulated)')}
-              >
-                <Volume2Icon size={24} />
-              </button>
-            </div>
           </div>
           
         </div>
