@@ -111,13 +111,22 @@
 
       const handleSearch = async (e) => {
         e.preventDefault();
-        if (!searchQuery.trim()) return;
+        const query = searchQuery.trim();
+        if (!query) return;
 
-        // Auto-detect Coordinates (e.g., 37.51551, 126.88110)
-        const coordMatch = searchQuery.trim().match(/^(-?\d+(\.\d+)?)[,\s]+(-?\d+(\.\d+)?)$/);
+        // Auto-detect Coordinates: Supports "37.51551, 126.88110" and "37.51470° N, 126.89332° E"
+        const coordRegex = /^([+-]?\d+(?:\.\d+)?)\s*°?\s*([NSns])?[,\s]+([+-]?\d+(?:\.\d+)?)\s*°?\s*([EWew])?$/;
+        const coordMatch = query.match(coordRegex);
+        
         if (coordMatch) {
-          const lat = parseFloat(coordMatch[1]);
-          const lon = parseFloat(coordMatch[3]);
+          let lat = parseFloat(coordMatch[1]);
+          const latDir = coordMatch[2]?.toUpperCase();
+          if (latDir === 'S') lat = -lat; // South is negative latitude
+
+          let lon = parseFloat(coordMatch[3]);
+          const lonDir = coordMatch[4]?.toUpperCase();
+          if (lonDir === 'W') lon = -lon; // West is negative longitude
+
           selectTarget({ lat, lon, display_name: "Pinned Coordinates" });
           return;
         }
@@ -127,7 +136,7 @@
         const performSearch = async (userLat, userLon) => {
           try {
             // Fetch more results to allow accurate local sorting
-            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=15`);
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=15`);
             const data = await res.json();
 
             // Order by distance if we successfully got user's location
@@ -269,7 +278,6 @@
       };
 
       // --- RENDER SEARCH STATE ---
-      // Replaced h-screen with h-full (which perfectly fills the 100dvh root body)
       if (appState === 'SEARCH') {
         return (
           <div className="flex flex-col h-full w-full max-w-md mx-auto bg-gray-50 text-gray-900 font-sans shadow-xl relative">
@@ -347,7 +355,6 @@
       let normRot = ((arrowRotation % 360) + 360) % 360;
       if (normRot > 180) normRot -= 360;
 
-      // Replaced h-screen with h-full 
       return (
         <div className={`flex flex-col h-full w-full max-w-md mx-auto ${bgClass} text-white font-sans relative selection:bg-transparent touch-none transition-colors duration-1000 ease-in-out`}>
           
@@ -437,7 +444,7 @@
             )}
           </div>
 
-          {/* Bottom Area (Distance) - pb-10 added for extra safety margin above browser bottom bars */}
+          {/* Bottom Area (Distance) */}
           <div className="pb-10 px-8 relative z-10 flex-shrink-0">
             {currentLoc && (
               <div className="mb-4">
